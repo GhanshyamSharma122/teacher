@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import ChatPanel from './components/ChatPanel'
 import Whiteboard from './components/Whiteboard'
 import { streamChat } from './api'
@@ -20,9 +20,13 @@ function App() {
 
   const [difficulty, setDifficulty] = useState(() => localStorage.getItem('ai_teacher_difficulty') || 'Intermediate');
   const [provider, setProvider] = useState(() => localStorage.getItem('ai_teacher_provider') || 'azure-openai');
+  const [openaiEndpoint, setOpenaiEndpoint] = useState(() => localStorage.getItem('ai_teacher_openai_endpoint') || 'https://api.openai.com/v1');
   const [isFocusMode, setIsFocusMode] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeTab, setActiveTab] = useState('chat'); // For mobile
+  const abortRef = useRef(null);
+  const messageFrameRef = useRef(0);
+  const streamedTextRef = useRef('');
 
   // Persist State
   useEffect(() => {
@@ -43,12 +47,21 @@ function App() {
     localStorage.setItem('ai_teacher_provider', provider);
   }, [provider]);
 
+  useEffect(() => {
+    localStorage.setItem('ai_teacher_openai_endpoint', openaiEndpoint);
+  }, [openaiEndpoint]);
+
   const handleSendMessage = async (text, isVisualRequest = false) => {
+    if (!text?.trim() || isStreaming) return;
+    abortRef.current?.abort();
     const newMessages = [...messages, { role: 'user', text }];
     setMessages(newMessages);
     setIsStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     let aiResponseText = "";
+    streamedTextRef.current = '';
     setMessages(prev => [...prev, { role: 'model', text: '' }]);
     
     if (window.innerWidth < 1024 && !isVisualRequest) {
@@ -57,7 +70,7 @@ function App() {
 
     try {
       // Send CURRENT whiteboard state with request
-      await streamChat(newMessages, aiWhiteboardData.elements, difficulty, provider, (chunk) => {
+      await streamChat(newMessages, aiWhiteboardData, difficulty, provider, (chunk) => {
         aiResponseText += chunk;
         
         // Extract drawing instructions
@@ -68,19 +81,25 @@ function App() {
           const jsonStr = aiResponseText.substring(tagStart + 12, tagEnd).trim();
           try {
              const parsed = JSON.parse(jsonStr);
-             setAiWhiteboardData(parsed);
+             if (Array.isArray(parsed.elements)) setAiWhiteboardData({ elements: parsed.elements });
              if (window.innerWidth < 1024) {
                setActiveTab('whiteboard');
              }
           } catch(e) { console.error("Invalid whiteboard JSON", e); }
         }
 
-        // Update the last message
-        setMessages(prev => {
-          const copy = [...prev];
-          copy[copy.length - 1] = { role: 'model', text: aiResponseText };
-          return copy;
-        });
+        // Throttle streamed text to one React update per animation frame.
+        streamedTextRef.current = aiResponseText;
+        if (!messageFrameRef.current) {
+          messageFrameRef.current = requestAnimationFrame(() => {
+            messageFrameRef.current = 0;
+            setMessages(prev => {
+              const copy = [...prev];
+              if (copy.at(-1)?.role === 'model') copy[copy.length - 1] = { role: 'model', text: streamedTextRef.current };
+              return copy;
+            });
+          });
+        }
       }, (error) => {
         console.error("Chat Error:", error);
         setMessages(prev => {
@@ -89,16 +108,29 @@ function App() {
           return copy;
         });
         setIsStreaming(false);
-      });
+      }, controller.signal, openaiEndpoint);
     } catch (e) {
       console.error(e);
     } finally {
+      cancelAnimationFrame(messageFrameRef.current);
+      messageFrameRef.current = 0;
+      if (aiResponseText) {
+        setMessages(prev => {
+          const copy = [...prev];
+          if (copy.at(-1)?.role === 'model') copy[copy.length - 1] = { role: 'model', text: aiResponseText };
+          return copy;
+        });
+      }
       setIsStreaming(false);
+      abortRef.current = null;
     }
   };
 
   const handleClearHistory = () => {
      if (confirm('Clear all chat and whiteboard history?')) {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setIsStreaming(false);
         setMessages([]);
         setAiWhiteboardData({ elements: [] });
         localStorage.removeItem('ai_teacher_messages');
@@ -129,6 +161,12 @@ function App() {
                  <option value="Advanced">Advanced</option>
                </select>
              </div>
+             {provider === 'openai-compatible' && (
+               <input value={openaiEndpoint} onChange={e => setOpenaiEndpoint(e.target.value)}
+                 aria-label="OpenAI-compatible endpoint URL" title="OpenAI-compatible endpoint URL"
+                 className="w-44 bg-white border border-slate-200 rounded-md px-2 py-1 text-[11px] text-slate-600 outline-none focus:ring-2 focus:ring-brand-200"
+                 placeholder="https://api.openai.com/v1" />
+             )}
              <div className="flex items-center space-x-1">
                <span>AI:</span>
                <select 
@@ -138,6 +176,7 @@ function App() {
                >
                  <option value="azure-openai">Azure OpenAI</option>
                  <option value="gemini">Gemini</option>
+                 <option value="openai-compatible">OpenAI-compatible</option>
                </select>
              </div>
            </div>
@@ -160,7 +199,7 @@ function App() {
         >
           {isFocusMode ? '📖 Split View' : '🎯 Focus Mode'}
         </button>
-        <Whiteboard aiElements={aiWhiteboardData} />
+          <Whiteboard aiElements={aiWhiteboardData} onChange={setAiWhiteboardData} />
       </div>
     </div>
   )

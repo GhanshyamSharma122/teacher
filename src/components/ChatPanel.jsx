@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+const stripWhiteboardData = (text = '') => {
+  const idx = text.indexOf('<whiteboard>');
+  return idx === -1 ? text : text.substring(0, idx).trim();
+};
+
+const stripQuizData = (text = '') => text.replace(/<quiz>[\s\S]*?<\/quiz>/g, '').trim();
+
 export default function ChatPanel({ messages, onSendMessage, isStreaming }) {
   const [input, setInput] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -8,20 +15,27 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }) {
   const recognitionRef = useRef(null);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    endRef.current?.scrollIntoView({ behavior: isStreaming ? 'auto' : 'smooth' });
   }, [messages, isStreaming]);
 
   // Read latest AI message aloud
   useEffect(() => {
+    const speech = window.speechSynthesis;
+    if (!speech) return;
     if (!isStreaming && messages.length > 0) {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg.role === 'model' && isSpeaking) {
          const textToRead = stripWhiteboardData(stripQuizData(lastMsg.text));
-         const utterance = new SpeechSynthesisUtterance(textToRead);
-         window.speechSynthesis.speak(utterance);
+         if (textToRead) {
+           speech.cancel();
+           const utterance = new SpeechSynthesisUtterance(textToRead);
+           speech.speak(utterance);
+         }
       }
     }
   }, [isStreaming, messages, isSpeaking]);
+
+  useEffect(() => () => window.speechSynthesis?.cancel(), []);
 
   const handleSubmit = (e) => {
     if(e) e.preventDefault();
@@ -79,16 +93,6 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }) {
     }
   };
 
-  const stripWhiteboardData = (text) => {
-    const idx = text.indexOf('<whiteboard>');
-    if (idx !== -1) return text.substring(0, idx).trim();
-    return text;
-  };
-
-  const stripQuizData = (text) => {
-    return text.replace(/<quiz>.*?<\/quiz>/g, '').trim();
-  };
-
   const renderMessageContent = (text) => {
     let cleanText = stripWhiteboardData(text);
     
@@ -140,7 +144,7 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }) {
           <button 
             onClick={() => {
               setIsSpeaking(!isSpeaking);
-              if (isSpeaking) window.speechSynthesis.cancel();
+              if (isSpeaking) window.speechSynthesis?.cancel();
             }}
             className={`w-8 h-8 rounded-full flex items-center justify-center transition shadow-sm ${isSpeaking ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
             title="Toggle Text-to-Speech"
@@ -163,9 +167,18 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }) {
              <div className="text-4xl mb-4">🎓</div>
              <p className="font-medium text-slate-600">Start learning something new.</p>
              <p className="text-sm mt-1">Try "Explain databases" or using the microphone to speak.</p>
+             <div className="flex flex-wrap justify-center gap-2 mt-5">
+               {['Explain with a diagram', 'Quiz me', 'Give me an example'].map(prompt => (
+                 <button key={prompt} onClick={() => onSendMessage(prompt)} disabled={isStreaming}
+                   className="px-3 py-2 text-xs font-medium rounded-full bg-white border border-slate-200 text-slate-600 hover:border-brand-300 hover:text-brand-600 transition">
+                   {prompt}
+                 </button>
+               ))}
+             </div>
           </div>
         )}
         {messages.map((m, i) => (
+          (m.role === 'model' && !m.text && isStreaming) ? null :
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[85%] rounded-2xl p-3.5 shadow-sm ${
               m.role === 'user' 

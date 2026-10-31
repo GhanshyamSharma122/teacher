@@ -9,6 +9,7 @@ const BOX_MIN_H = 48;
 const BOX_RADIUS = 12;
 const FONT_SIZE = 14;
 const FONT = `${FONT_SIZE}px Inter, system-ui, sans-serif`;
+const AI_DRAW_STEP_MS = 120;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -172,15 +173,7 @@ function autoLayoutElements(elements, canvasW, canvasH) {
   const layerWidths = layers.map(layer =>
     layer.length > 0 ? Math.max(...layer.map(i => nodeSizes[i].w)) : 0
   );
-  const layerHeights = layers.map(layer => {
-    if (layer.length === 0) return 0;
-    const totalH = layer.reduce((sum, i) => sum + nodeSizes[i].h, 0);
-    return totalH + (layer.length - 1) * GAP_Y;
-  });
-
   const totalWidth = layerWidths.reduce((s, w) => s + w, 0) + (layers.length - 1) * GAP_X;
-  const maxLayerH = Math.max(...layerHeights, 0);
-
   // ── Position nodes ───────────────────────────────────────────────────
   // Center the whole diagram in the canvas
   const startX = Math.max(PAD, (W - totalWidth) / 2);
@@ -247,26 +240,48 @@ function autoLayoutElements(elements, canvasW, canvasH) {
 //  WHITEBOARD COMPONENT
 // ══════════════════════════════════════════════════════════════════════════
 
-export default function Whiteboard({ aiElements }) {
+export default function Whiteboard({ aiElements, onChange }) {
   const canvasRef = useRef(null);
   const [tool, setTool] = useState('pen');
   const [elements, setElements] = useState([]);
   const [history, setHistory] = useState([]);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [currentPath, setCurrentPath] = useState(null);
+  const [redoStack, setRedoStack] = useState([]);
+  const [zoom, setZoom] = useState(1);
+  const toolRef = useRef('pen');
+  const isDrawingRef = useRef(false);
+  const currentPathRef = useRef(null);
+  const frameRef = useRef(0);
+  const zoomRef = useRef(1);
+  const panRef = useRef({ x: 0, y: 0 });
+  const panStartRef = useRef(null);
 
   // Animation State
   const [animationQueue, setAnimationQueue] = useState([]);
   const [renderingIndex, setRenderingIndex] = useState(-1);
+  const elementsRef = useRef(elements);
 
   // Track the last processed AI data to prevent re-processing
   const lastAiRef = useRef(null);
+  const pendingLocalKeyRef = useRef(null);
+
+  const updateElements = useCallback((nextElements) => {
+    elementsRef.current = nextElements;
+    setElements(nextElements);
+    pendingLocalKeyRef.current = JSON.stringify(nextElements);
+    setRedoStack([]);
+    onChange?.({ elements: nextElements });
+  }, [onChange]);
 
   // Handle new incoming AI elements
   useEffect(() => {
     if (aiElements && aiElements.elements) {
       const key = JSON.stringify(aiElements.elements);
       if (key === lastAiRef.current) return;
+      if (key === pendingLocalKeyRef.current) {
+        pendingLocalKeyRef.current = null;
+        lastAiRef.current = key;
+        return;
+      }
       lastAiRef.current = key;
 
       const canvas = canvasRef.current;
@@ -277,7 +292,8 @@ export default function Whiteboard({ aiElements }) {
 
       if (incoming.length > 0) {
         // Save current state for undo, then CLEAR the canvas
-        setHistory(prev => [...prev, elements]);
+        setHistory(prev => [...prev, elementsRef.current]);
+        elementsRef.current = [];
         setElements([]);
 
         // Queue ALL incoming elements for sequential animation
@@ -285,28 +301,38 @@ export default function Whiteboard({ aiElements }) {
         setRenderingIndex(0);
       }
     }
-  }, [aiElements]);
+  }, [aiElements, updateElements]);
 
   // Sequenced animation
   useEffect(() => {
     if (renderingIndex >= 0 && renderingIndex < animationQueue.length) {
       const timer = setTimeout(() => {
-        setElements(prev => [...prev, animationQueue[renderingIndex]]);
-        setRenderingIndex(idx => idx + 1);
-      }, 400);
+        const next = [...elementsRef.current, animationQueue[renderingIndex]];
+        elementsRef.current = next;
+        setElements(next);
+        if (renderingIndex === animationQueue.length - 1) {
+          setRenderingIndex(-1);
+          setAnimationQueue([]);
+        } else {
+          setRenderingIndex(index => index + 1);
+        }
+      }, AI_DRAW_STEP_MS);
       return () => clearTimeout(timer);
-    } else if (renderingIndex >= animationQueue.length && renderingIndex !== -1) {
-      setRenderingIndex(-1);
-      setAnimationQueue([]);
     }
   }, [renderingIndex, animationQueue]);
 
   // ── Drawing ────────────────────────────────────────────────────────────
 
   const drawElements = useCallback((ctx, els, currentToolPath) => {
-    const W = ctx.canvas.width;
-    const H = ctx.canvas.height;
-    ctx.clearRect(0, 0, W, H);
+    const W = ctx.canvas.clientWidth || ctx.canvas.width;
+    const H = ctx.canvas.clientHeight || ctx.canvas.height;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+    ctx.save();
+    ctx.translate(panRef.current.x, panRef.current.y);
+    ctx.scale(zoomRef.current, zoomRef.current);
 
     // Grid
     ctx.strokeStyle = '#e2e8f0';
@@ -318,10 +344,10 @@ export default function Whiteboard({ aiElements }) {
       ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(W, i); ctx.stroke();
     }
 
-    const items = [...els];
+    const items = els.slice();
     if (currentToolPath) items.push(currentToolPath);
 
-    items.forEach((el, idx) => {
+    items.forEach((el) => {
       ctx.strokeStyle = '#334155';
       ctx.fillStyle = '#334155';
       ctx.lineWidth = 2;
@@ -458,7 +484,27 @@ export default function Whiteboard({ aiElements }) {
       ctx.fillStyle = 'rgba(20, 184, 166, 0.6)';
       ctx.fill();
     }
+    ctx.restore();
   }, [renderingIndex, animationQueue]);
+
+  // Pointer events update refs immediately; this schedules at most one paint
+  // per browser frame instead of re-rendering React for every sampled point.
+  const scheduleDraw = useCallback(() => {
+    if (frameRef.current) return;
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = 0;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      drawElements(canvas.getContext('2d'), elementsRef.current, currentPathRef.current);
+    });
+  }, [drawElements]);
+
+  const updateZoom = useCallback((nextZoom) => {
+    const value = Math.max(0.5, Math.min(2.5, nextZoom));
+    zoomRef.current = value;
+    setZoom(value);
+    scheduleDraw();
+  }, [scheduleDraw]);
 
   // Canvas resize observer
   useEffect(() => {
@@ -468,94 +514,157 @@ export default function Whiteboard({ aiElements }) {
 
     const resizeObserver = new ResizeObserver(() => {
       const parent = canvas.parentElement;
-      canvas.width = parent.clientWidth;
-      canvas.height = parent.clientHeight;
-      drawElements(ctx, elements, currentPath);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.floor(parent.clientWidth * dpr));
+      canvas.height = Math.max(1, Math.floor(parent.clientHeight * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      scheduleDraw();
     });
 
     resizeObserver.observe(canvas.parentElement);
     return () => resizeObserver.disconnect();
-  }, [drawElements, elements, currentPath]);
+  }, [scheduleDraw]);
 
   // Redraw on state change
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    let animationFrameId;
-    const render = () => {
-      drawElements(canvas.getContext('2d'), elements, currentPath);
-      if (renderingIndex !== -1) {
-        animationFrameId = requestAnimationFrame(render);
-      }
-    };
-    render();
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [elements, currentPath, renderingIndex, drawElements]);
+    scheduleDraw();
+  }, [elements, renderingIndex, animationQueue, scheduleDraw]);
+
+  useEffect(() => () => cancelAnimationFrame(frameRef.current), []);
 
   // ── Pointer handlers ─────────────────────────────────────────────────
 
   const getCoords = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    return {
+      x: (e.clientX - rect.left - panRef.current.x) / zoomRef.current,
+      y: (e.clientY - rect.top - panRef.current.y) / zoomRef.current
+    };
   };
+
+  const eraseAt = useCallback(({ x, y }) => {
+    const current = elementsRef.current;
+    let hitIndex = -1;
+    for (let i = current.length - 1; i >= 0; i -= 1) {
+      const item = current[i];
+      if (item.type === 'pen') {
+        if (item.points?.some(point => Math.hypot(point.x - x, point.y - y) <= 14)) {
+          hitIndex = i;
+          break;
+        }
+      } else if (item.type !== 'arrow') {
+        const box = getBBox(item);
+        if (x >= box.x - 8 && x <= box.x + box.w + 8 && y >= box.y - 8 && y <= box.y + box.h + 8) {
+          hitIndex = i;
+          break;
+        }
+      }
+    }
+    if (hitIndex === -1) return;
+    const next = current
+      .filter((_, index) => index !== hitIndex)
+      .filter(item => !(item.type === 'arrow' && (item.from === hitIndex || item.to === hitIndex)))
+      .map(item => item.type === 'arrow' ? {
+        ...item,
+        from: item.from > hitIndex ? item.from - 1 : item.from,
+        to: item.to > hitIndex ? item.to - 1 : item.to
+      } : item);
+    setHistory(prev => [...prev, current]);
+    updateElements(next);
+  }, [updateElements]);
 
   const handlePointerDown = (e) => {
     if (renderingIndex !== -1) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
     const { x, y } = getCoords(e);
-    setIsDrawing(true);
-    if (tool === 'pen') {
-      setCurrentPath({ type: 'pen', points: [{ x, y }] });
+    toolRef.current = tool;
+    isDrawingRef.current = true;
+    if (tool === 'pan') {
+      panStartRef.current = { clientX: e.clientX, clientY: e.clientY, ...panRef.current };
+    } else if (tool === 'eraser') {
+      eraseAt({ x, y });
+      isDrawingRef.current = false;
+    } else if (tool === 'pen') {
+      currentPathRef.current = { type: 'pen', points: [{ x, y }] };
     } else if (tool === 'rectangle') {
-      setCurrentPath({ type: 'rectangle', startX: x, startY: y, endX: x, endY: y });
+      currentPathRef.current = { type: 'rectangle', startX: x, startY: y, endX: x, endY: y };
     } else if (tool === 'arrow') {
-      setCurrentPath({ type: 'arrow', startX: x, startY: y, endX: x, endY: y });
+      currentPathRef.current = { type: 'arrow', startX: x, startY: y, endX: x, endY: y };
     } else if (tool === 'text') {
       const text = prompt("Enter text:");
       if (text) {
-        setHistory(prev => [...prev, elements]);
-        setElements([...elements, { type: 'text', text, x, y }]);
+        const next = [...elementsRef.current, { type: 'text', text, x, y }];
+        setHistory(prev => [...prev, elementsRef.current]);
+        updateElements(next);
       }
-      setIsDrawing(false);
+      isDrawingRef.current = false;
+      currentPathRef.current = null;
     } else if (tool === 'box') {
       const text = prompt("Enter box name:");
       if (text) {
-        setHistory(prev => [...prev, elements]);
-        setElements([...elements, { type: 'box', text, x, y }]);
+        const next = [...elementsRef.current, { type: 'box', text, x, y }];
+        setHistory(prev => [...prev, elementsRef.current]);
+        updateElements(next);
       }
-      setIsDrawing(false);
+      isDrawingRef.current = false;
+      currentPathRef.current = null;
     }
   };
 
   const handlePointerMove = (e) => {
-    if (!isDrawing || !currentPath) return;
-    const { x, y } = getCoords(e);
-    if (tool === 'pen') {
-      setCurrentPath(prev => ({ ...prev, points: [...prev.points, { x, y }] }));
-    } else if (tool === 'rectangle' || tool === 'arrow') {
-      setCurrentPath(prev => ({ ...prev, endX: x, endY: y }));
+    if (!isDrawingRef.current || !currentPathRef.current) return;
+    if (toolRef.current === 'pan' && panStartRef.current) {
+      panRef.current = {
+        x: panStartRef.current.x + e.clientX - panStartRef.current.clientX,
+        y: panStartRef.current.y + e.clientY - panStartRef.current.clientY
+      };
+      scheduleDraw();
+      return;
     }
+    const { x, y } = getCoords(e);
+    if (toolRef.current === 'pen') {
+      const points = currentPathRef.current.points;
+      const last = points[points.length - 1];
+      const dx = x - last.x;
+      const dy = y - last.y;
+      if (dx * dx + dy * dy >= 2.25) points.push({ x, y });
+    } else if (toolRef.current === 'rectangle' || toolRef.current === 'arrow') {
+      currentPathRef.current.endX = x;
+      currentPathRef.current.endY = y;
+    }
+    scheduleDraw();
   };
 
   const handlePointerUp = () => {
-    if (isDrawing && currentPath) {
-      setHistory(prev => [...prev, elements]);
-      setElements([...elements, currentPath]);
+    if (isDrawingRef.current && currentPathRef.current) {
+      const next = [...elementsRef.current, currentPathRef.current];
+      setHistory(prev => [...prev, elementsRef.current]);
+      updateElements(next);
     }
-    setIsDrawing(false);
-    setCurrentPath(null);
+    isDrawingRef.current = false;
+    currentPathRef.current = null;
+    panStartRef.current = null;
+    scheduleDraw();
   };
 
   const undo = () => {
     if (history.length > 0) {
       const newHistory = [...history];
-      setElements(newHistory.pop());
+      const previous = newHistory.pop();
+      setRedoStack(stack => [...stack, elementsRef.current]);
+      elementsRef.current = previous;
+      setElements(previous);
+      pendingLocalKeyRef.current = JSON.stringify(previous);
+      onChange?.({ elements: previous });
       setHistory(newHistory);
     }
   };
 
   const clear = () => {
-    setHistory(prev => [...prev, elements]);
-    setElements([]);
+    setHistory(prev => [...prev, elementsRef.current]);
+    updateElements([]);
     lastAiRef.current = null; // allow same AI data to be re-drawn after clear
   };
 
@@ -576,6 +685,20 @@ export default function Whiteboard({ aiElements }) {
         setTool={setTool}
         onClear={clear}
         onUndo={undo}
+        onRedo={() => {
+          if (!redoStack.length) return;
+          const next = redoStack[redoStack.length - 1];
+          setRedoStack(stack => stack.slice(0, -1));
+          setHistory(stack => [...stack, elementsRef.current]);
+          elementsRef.current = next;
+          setElements(next);
+          pendingLocalKeyRef.current = JSON.stringify(next);
+          onChange?.({ elements: next });
+        }}
+        zoom={zoom}
+        onZoomIn={() => updateZoom(zoomRef.current + 0.1)}
+        onZoomOut={() => updateZoom(zoomRef.current - 0.1)}
+        onResetView={() => { panRef.current = { x: 0, y: 0 }; updateZoom(1); }}
       />
 
       {/* Export Button */}
@@ -595,12 +718,11 @@ export default function Whiteboard({ aiElements }) {
 
       <canvas
         ref={canvasRef}
-        className="w-full h-full cursor-crosshair touch-none"
+        className={`w-full h-full touch-none ${tool === 'pan' ? 'cursor-grab' : tool === 'eraser' ? 'cursor-cell' : 'cursor-crosshair'}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        onPointerOut={handlePointerUp}
       />
     </div>
   );
