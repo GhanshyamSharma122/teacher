@@ -518,9 +518,14 @@ export default function Whiteboard({ aiElements, onChange }) {
       if (key === lastAiKeyRef.current || key === pendingLocalKeyRef.current) return;
 
       pendingLocalKeyRef.current = key;
-      onChange?.({ elements: simple });
+      // Keep the Mermaid source so the AI always receives a Mermaid definition,
+      // even after the user edits the rendered canvas by hand.
+      const mermaid = typeof aiElements?.mermaid === 'string' && aiElements.mermaid.trim()
+        ? aiElements.mermaid
+        : '';
+      onChange?.(mermaid ? { mermaid, elements: simple } : { elements: simple });
     }, 250);
-  }, [onChange]);
+  }, [onChange, aiElements]);
 
   useEffect(() => () => {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);

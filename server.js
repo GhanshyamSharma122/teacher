@@ -47,15 +47,16 @@ Difficulty Level Chosen by User: ${difficulty}
 
 Rules:
 1. Explain concisely based on the difficulty level. Be extremely calm and highly encouraging. Use phrases like "Watch this...", "Here is why this clicks...", "Let me simplify that visually".
-2. You can DRAW on the user's interactive whiteboard. Treat it as a tool/harness: use it whenever a diagram, sequence, comparison, geometry, or spatial explanation helps.
-3. Evolution: The user will provide the CURRENT whiteboard state. Preserve useful existing elements and add or mutate only what is needed.
+2. Diagrams are written in Mermaid, never drawn directly. Whenever a diagram, flow, sequence, comparison, geometry, or spatial explanation helps, write ONE Mermaid definition wrapped in <mermaid> tags. The app converts it into an Excalidraw canvas that the user can edit visually.
+3. Evolution: The user will provide the CURRENT DIAGRAM. Keep the useful nodes and change only what is needed.
 4. If you want to quiz the user, output questions in your text in this exact format:
 <quiz>What is the port for HTTP?|80|443|8080</quiz>
 
-DIAGRAM DRAWING RULES (use Mermaid):
-- Whenever a diagram, flow, sequence, comparison, or spatial explanation helps, append exactly ONE Mermaid flowchart wrapped in <mermaid> tags at the very end of your message.
+MERMAID RULES:
+- Append exactly ONE <mermaid> block at the very end of your message.
 - Use "flowchart LR" for processes and architecture, and "flowchart TD" for hierarchies or decision trees.
-- Mermaid lays the diagram out automatically, so never provide coordinates. Getting the syntax right matters more than the order of the statements.
+- Mermaid computes the layout, so never provide coordinates, positions, or JSON scenes.
+- Never output a <whiteboard> block, element lists, or shape coordinates. Mermaid is the only diagram format you produce.
 - Keep node labels to 1-4 words. Use edge labels for actions, e.g. A -->|Request| B.
 - 12 nodes maximum. Split bigger ideas into separate explanations.
 - Use valid Mermaid syntax only. Do not use Markdown code fences inside the tags.
@@ -69,9 +70,6 @@ flowchart LR
   C -->|Rows| B
   B -->|Page| A
 </mermaid>
-
-- The whiteboard is rendered with Mermaid + Excalidraw, so the diagram stays editable.
-- Never output a <whiteboard> JSON block when you output a <mermaid> block.
 `;
 
 const normalizeMessages = (messages) => (Array.isArray(messages) ? messages : [])
@@ -265,9 +263,17 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     const currentMermaid = typeof whiteboardState?.mermaid === 'string' ? whiteboardState.mermaid.trim() : '';
-    const currentScene = currentMermaid
-      ? `\nCURRENT DIAGRAM (Mermaid). Extend or replace it when the user asks for changes:\n${currentMermaid}\n`
-      : `\nCURRENT WHITEBOARD ELEMENTS (legacy format):\n${JSON.stringify(whiteboardState || { elements: [] })}\n`;
+    const currentElements = Array.isArray(whiteboardState?.elements) ? whiteboardState.elements : [];
+    const sceneParts = [];
+    if (currentMermaid) {
+      sceneParts.push(`CURRENT DIAGRAM (Mermaid source):\n${currentMermaid}`);
+    }
+    if (currentElements.length > 0) {
+      sceneParts.push(`CURRENT CANVAS SNAPSHOT (the user may have moved, resized, or relabeled nodes by hand):\n${JSON.stringify(currentElements)}`);
+    }
+    const currentScene = sceneParts.length > 0
+      ? `\n${sceneParts.join('\n\n')}\nReturn a full updated Mermaid diagram that keeps the useful content.\n`
+      : '\nCURRENT CANVAS: empty.\n';
 
     const systemPrompt = getSystemInstruction(difficulty) + currentScene;
 
