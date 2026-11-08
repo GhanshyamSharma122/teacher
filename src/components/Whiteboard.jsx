@@ -538,7 +538,7 @@ export default function Whiteboard({ aiElements, onChange }) {
           togglePanMode();
         }}
         aria-pressed={panMode}
-        className={`absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur-sm transition ${
+        className={`absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur-sm transition ${
           panMode
             ? 'border-brand-600 bg-brand-600 text-white'
             : 'border-slate-200 bg-white/90 text-slate-600 hover:border-brand-200 hover:text-brand-600'
