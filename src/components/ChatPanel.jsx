@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 
-const stripWhiteboardData = (text = '') => {
-  const idx = text.indexOf('<whiteboard>');
-  return idx === -1 ? text : text.substring(0, idx).trim();
-};
+const stripWhiteboardData = (text = '') => text
+  // Remove a complete or still-streaming <mermaid> block.
+  .replace(/<mermaid>[\s\S]*?(<\/mermaid>|$)/g, '')
+  // Legacy <whiteboard> JSON payload.
+  .replace(/<whiteboard>[\s\S]*?(<\/whiteboard>|$)/g, '')
+  .trim();
+
 
 const stripQuizData = (text = '') => text.replace(/<quiz>[\s\S]*?<\/quiz>/g, '').trim();
 
@@ -102,33 +106,33 @@ export default function ChatPanel({ messages, onSendMessage, isStreaming }) {
 
     return (
       <div className="flex flex-col space-y-2">
-         <div className="whitespace-pre-wrap leading-relaxed text-[15px]">{cleanText}</div>
-         {quizMatch && quizMatch[1] && (
-           <div className="mt-3 p-3 bg-brand-50 border border-brand-100 rounded-xl">
-             <p className="font-semibold text-sm mb-2 text-brand-800">⚡ Flash Quiz</p>
-             {(() => {
-                const parts = quizMatch[1].split('|');
-                const question = parts[0];
-                const answers = parts.slice(1);
-                return (
-                  <div>
-                    <p className="text-sm mb-2 font-medium">{question}</p>
-                    <div className="flex flex-wrap gap-2">
-                       {answers.map((ans, i) => (
-                         <button 
-                           key={i}
-                           onClick={() => onSendMessage(`My answer is: ${ans}`)}
-                           className="px-3 py-1.5 text-xs bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-500 hover:text-white transition"
-                         >
-                           {ans}
-                         </button>
-                       ))}
-                    </div>
-                  </div>
-                );
-             })()}
-           </div>
-         )}
+        <ReactMarkdown className="whitespace-pre-wrap leading-relaxed text-[15px]">{cleanText}</ReactMarkdown>
+        {quizMatch && quizMatch[1] && (
+          <div className="mt-3 p-3 bg-brand-50 border border-brand-100 rounded-xl">
+            <p className="font-semibold text-sm mb-2 text-brand-800">⚡ Flash Quiz</p>
+            {(() => {
+               const parts = quizMatch[1].split('|');
+               const question = parts[0];
+               const answers = parts.slice(1);
+               return (
+                 <div>
+                   <p className="text-sm mb-2 font-medium">{question}</p>
+                   <div className="flex flex-wrap gap-2">
+                      {answers.map((ans, i) => (
+                        <button 
+                          key={i}
+                          onClick={() => onSendMessage(`My answer is: ${ans}`)}
+                          className="px-3 py-1.5 text-xs bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-500 hover:text-white transition"
+                        >
+                          {ans}
+                        </button>
+                      ))}
+                   </div>
+                 </div>
+               );
+            })()}
+          </div>
+        )}
       </div>
     );
   };
