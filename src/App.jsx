@@ -245,40 +245,38 @@ function App() {
       </div>
 
       <div className={`${chatVisibility} flex-col h-full w-full lg:w-[var(--chat-width)] flex-shrink-0 min-w-0`}>
-        <div className="bg-slate-50 px-4 py-2 text-xs border-b border-slate-200 flex justify-between items-center text-slate-500 flex-shrink-0 z-10">
-           <div className="flex items-center space-x-3">
-             <div className="flex items-center space-x-1">
-               <span>Mode:</span>
-               <select 
-                 className="bg-transparent font-semibold text-brand-600 cursor-pointer outline-none" 
-                 value={difficulty} 
-                 onChange={(e) => setDifficulty(e.target.value)}
-               >
-                 <option value="Beginner">Beginner</option>
-                 <option value="Intermediate">Intermediate</option>
-                 <option value="Advanced">Advanced</option>
-               </select>
-             </div>
-             {provider === 'openai-compatible' && (
-               <input value={openaiEndpoint} onChange={e => setOpenaiEndpoint(e.target.value)}
-                 aria-label="OpenAI-compatible endpoint URL" title="OpenAI-compatible endpoint URL"
-                 className="w-44 bg-white border border-slate-200 rounded-md px-2 py-1 text-[11px] text-slate-600 outline-none focus:ring-2 focus:ring-brand-200"
-                 placeholder="https://api.openai.com/v1" />
-             )}
-             <div className="flex items-center space-x-1">
-               <span>AI:</span>
-               <select 
-                 className="bg-transparent font-semibold text-brand-600 cursor-pointer outline-none" 
-                 value={provider} 
-                 onChange={(e) => setProvider(e.target.value)}
-               >
-                 <option value="azure-openai">Azure OpenAI</option>
-                 <option value="gemini">Gemini</option>
-                 <option value="openai-compatible">OpenAI-compatible</option>
-               </select>
-             </div>
+        <div className="bg-slate-50 px-3 py-2 text-xs border-b border-slate-200 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500 flex-shrink-0 z-10">
+           <div className="flex items-center gap-1 whitespace-nowrap">
+             <span>Mode:</span>
+             <select 
+               className="bg-transparent font-semibold text-brand-600 cursor-pointer outline-none" 
+               value={difficulty} 
+               onChange={(e) => setDifficulty(e.target.value)}
+             >
+               <option value="Beginner">Beginner</option>
+               <option value="Intermediate">Intermediate</option>
+               <option value="Advanced">Advanced</option>
+             </select>
            </div>
-           <button onClick={handleClearHistory} className="hover:text-red-500 transition">Clear History</button>
+           <div className="flex items-center gap-1 whitespace-nowrap">
+             <span>AI:</span>
+             <select 
+               className="bg-transparent font-semibold text-brand-600 cursor-pointer outline-none max-w-[9.5rem]" 
+               value={provider} 
+               onChange={(e) => setProvider(e.target.value)}
+             >
+               <option value="azure-openai">Azure OpenAI</option>
+               <option value="gemini">Gemini</option>
+               <option value="openai-compatible">OpenAI-compatible</option>
+             </select>
+           </div>
+           {provider === 'openai-compatible' && (
+             <input value={openaiEndpoint} onChange={e => setOpenaiEndpoint(e.target.value)}
+               aria-label="OpenAI-compatible endpoint URL" title="OpenAI-compatible endpoint URL"
+               className="min-w-40 flex-1 basis-40 bg-white border border-slate-200 rounded-md px-2 py-1 text-[11px] text-slate-600 outline-none focus:ring-2 focus:ring-brand-200"
+               placeholder="https://api.openai.com/v1" />
+           )}
+           <button onClick={handleClearHistory} className="ml-auto whitespace-nowrap hover:text-red-500 transition">Clear History</button>
         </div>
         <div className="flex-1 min-h-0 overflow-hidden">
           <ChatPanel 

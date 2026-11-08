@@ -35,6 +35,16 @@ body.is-resizing * {
   user-select: none !important;
 }
 
+/* Hold-and-drag canvas panning */
+.pan-ready .excalidraw__canvas {
+  cursor: grab !important;
+}
+body.is-panning,
+body.is-panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
 /* Subtly animated dot typing indicator */
 .typing-dot {
   animation: typing 1.4s infinite ease-in-out both;

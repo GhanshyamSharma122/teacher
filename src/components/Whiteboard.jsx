@@ -344,6 +344,103 @@ export default function Whiteboard({ aiElements, onChange }) {
   const pendingLocalKeyRef = useRef(null);
   const [isReady, setIsReady] = useState(false);
 
+  // ── Hold-and-drag panning ──────────────────────────────────────────────
+  const spaceHeldRef = useRef(false);
+  const panModeRef = useRef(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [panMode, setPanMode] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
+
+  useEffect(() => {
+    const isEditableTarget = (target) => target instanceof HTMLElement && Boolean(
+      target.closest('input, textarea, select, button, [contenteditable="true"]')
+    );
+
+    const handleKeyDown = (event) => {
+      if (event.code === 'Escape') {
+        panModeRef.current = false;
+        setPanMode(false);
+        return;
+      }
+      if (event.code !== 'Space' || event.repeat || isEditableTarget(event.target)) return;
+      spaceHeldRef.current = true;
+      setSpaceHeld(true);
+    };
+    const handleKeyUp = (event) => {
+      if (event.code !== 'Space') return;
+      spaceHeldRef.current = false;
+      setSpaceHeld(false);
+    };
+    const handleBlur = () => {
+      spaceHeldRef.current = false;
+      setSpaceHeld(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
+
+  const beginPan = useCallback((event) => {
+    const api = excalidrawAPI.current;
+    if (!api) return;
+
+    const appState = api.getAppState();
+    const zoom = appState.zoom?.value || 1;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startScrollX = appState.scrollX;
+    const startScrollY = appState.scrollY;
+
+    setIsPanning(true);
+    document.body.classList.add('is-panning');
+
+    const move = (e) => {
+      api.updateScene({
+        appState: {
+          scrollX: startScrollX + (e.clientX - startX) / zoom,
+          scrollY: startScrollY + (e.clientY - startY) / zoom,
+        },
+      });
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      setIsPanning(false);
+      document.body.classList.remove('is-panning');
+    };
+
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+  }, []);
+
+  // Space + drag, middle-mouse drag, or the "Hold to move" toggle.
+  const handlePointerDownCapture = useCallback((event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('canvas')) return;
+
+    const wantsPan = event.button === 1
+      || (event.button === 0 && (spaceHeldRef.current || panModeRef.current));
+    if (!wantsPan) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    beginPan(event);
+  }, [beginPan]);
+
+  const togglePanMode = () => {
+    const next = !panModeRef.current;
+    panModeRef.current = next;
+    setPanMode(next);
+  };
+
   const [initialData] = useState(() => {
     const simple = Array.isArray(aiElements?.elements) ? aiElements.elements : [];
     return {
@@ -430,7 +527,28 @@ export default function Whiteboard({ aiElements, onChange }) {
   }, []);
 
   return (
-    <div className="relative w-full h-full min-h-[320px]">
+    <div
+      className={`relative w-full h-full min-h-[320px] ${(panMode || spaceHeld) && !isPanning ? 'pan-ready' : ''} ${isPanning ? 'pan-active' : ''}`}
+      onPointerDownCapture={handlePointerDownCapture}
+    >
+      <button
+        type="button"
+        onClick={(event) => {
+          event.currentTarget.blur();
+          togglePanMode();
+        }}
+        aria-pressed={panMode}
+        className={`absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur-sm transition ${
+          panMode
+            ? 'border-brand-600 bg-brand-600 text-white'
+            : 'border-slate-200 bg-white/90 text-slate-600 hover:border-brand-200 hover:text-brand-600'
+        }`}
+        title="Hold and drag the sheet to move it. You can also hold Space or the middle mouse button."
+      >
+        <span aria-hidden="true">✋</span>
+        {panMode ? 'Drag to move' : 'Hold to move'}
+      </button>
+
       <Excalidraw
         excalidrawAPI={handleExcalidrawAPI}
         initialData={initialData}
