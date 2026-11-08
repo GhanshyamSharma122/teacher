@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { handleIndividualPrompt } from './src/utils/ai_service.js';
 
 dotenv.config();
 
@@ -17,8 +18,9 @@ app.get('/api/capabilities', (_req, res) => {
     providers: ['azure-openai', 'gemini', 'openai-compatible'],
     harness: {
       whiteboard: true,
+      diagramFormat: 'mermaid',
       operations: ['replace', 'preserve-and-extend'],
-      elements: ['box', 'text', 'arrow']
+      elements: ['mermaid', 'box', 'text', 'arrow']
     }
   });
 });
@@ -50,29 +52,26 @@ Rules:
 4. If you want to quiz the user, output questions in your text in this exact format:
 <quiz>What is the port for HTTP?|80|443|8080</quiz>
 
-WHITEBOARD DRAWING RULES:
-- Boxes auto-size to fit their text. Keep box labels SHORT (1-4 words max, e.g. "Client", "Web Server", "Database").
-- Arrows connect box edges automatically. Use "from" and "to" as indices into the elements array.
-- Space elements generously: at least 180px horizontal gap and 120px vertical gap between boxes.
-- Start the first box at approximately x:80, y:100. Arrange in clear rows/columns.
-- Use "text" type for standalone labels, titles, or annotations (not inside boxes).
-- Valid drawing types are "box", "text", and "arrow". Arrows use zero-based element indices in "from" and "to".
-- Keep the explanation readable without requiring the user to inspect the raw drawing payload.
+DIAGRAM DRAWING RULES (use Mermaid):
+- Whenever a diagram, flow, sequence, comparison, or spatial explanation helps, append exactly ONE Mermaid flowchart wrapped in <mermaid> tags at the very end of your message.
+- Use "flowchart LR" for processes and architecture, and "flowchart TD" for hierarchies or decision trees.
+- Mermaid lays the diagram out automatically, so never provide coordinates. Getting the syntax right matters more than the order of the statements.
+- Keep node labels to 1-4 words. Use edge labels for actions, e.g. A -->|Request| B.
+- 12 nodes maximum. Split bigger ideas into separate explanations.
+- Use valid Mermaid syntax only. Do not use Markdown code fences inside the tags.
+- If the user asks to extend or change the current diagram, return the FULL updated Mermaid definition, not a diff.
 
-To update the whiteboard, you MUST append a JSON block wrapped in <whiteboard> tags to the very end of your message.
 Format example:
-<whiteboard>
-{
-  "elements": [
-    {"type": "text", "text": "How the Web Works", "x": 80, "y": 40},
-    {"type": "box", "text": "Client", "x": 80, "y": 100},
-    {"type": "box", "text": "Web Server", "x": 340, "y": 100},
-    {"type": "box", "text": "Database", "x": 600, "y": 100},
-    {"type": "arrow", "from": 1, "to": 2},
-    {"type": "arrow", "from": 2, "to": 3}
-  ]
-}
-</whiteboard>
+<mermaid>
+flowchart LR
+  A[Client] -->|Request| B[Web Server]
+  B -->|Query| C[(Database)]
+  C -->|Rows| B
+  B -->|Page| A
+</mermaid>
+
+- The whiteboard is rendered with Mermaid + Excalidraw, so the diagram stays editable.
+- Never output a <whiteboard> JSON block when you output a <mermaid> block.
 `;
 
 const normalizeMessages = (messages) => (Array.isArray(messages) ? messages : [])
@@ -192,6 +191,21 @@ async function streamOpenAICompatible(systemPrompt, formattedMessages, res, requ
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  DeepSeek handler (uses the exact LLM calling code from "Study helper")
+// ═══════════════════════════════════════════════════════════════════════════
+async function streamDeepSeek(systemPrompt, formattedMessages, res) {
+  const prompt = formattedMessages
+    .map(m => `${m.role === 'model' ? 'assistant' : m.role}: ${m.text}`)
+    .join('\n\n');
+
+  const text = await handleIndividualPrompt(prompt, { system: systemPrompt });
+
+  for (let i = 0; i < text.length; i += 200) {
+    sendSse(res, { text: text.slice(i, i + 200) });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Gemini streaming handler
 // ═══════════════════════════════════════════════════════════════════════════
 async function streamGemini(systemPrompt, formattedMessages, res) {
@@ -235,7 +249,14 @@ app.post('/api/chat', async (req, res) => {
     openaiEndpoint
   } = req.body;
 
-  const provider = requestProvider || process.env.AI_PROVIDER || 'azure-openai';
+  let provider = requestProvider || process.env.AI_PROVIDER || 'openai-compatible';
+
+  // DeepSeek is the default. If a stale client still asks for Azure OpenAI but
+  // no Azure credentials are configured, fall back to the DeepSeek endpoint.
+  if (provider === 'azure-openai' && (!azureEndpoint || !azureApiKey || !azureDeployment)) {
+    provider = 'openai-compatible';
+  }
+
   const messages = normalizeMessages(requestMessages);
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -243,13 +264,18 @@ app.post('/api/chat', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
 
   try {
-    const systemPrompt = getSystemInstruction(difficulty) +
-      `\nCURRENT WHITEBOARD STATE (you can reuse these items to animate additions):\n` +
-      JSON.stringify(whiteboardState || { elements: [] });
+    const currentMermaid = typeof whiteboardState?.mermaid === 'string' ? whiteboardState.mermaid.trim() : '';
+    const currentScene = currentMermaid
+      ? `\nCURRENT DIAGRAM (Mermaid). Extend or replace it when the user asks for changes:\n${currentMermaid}\n`
+      : `\nCURRENT WHITEBOARD ELEMENTS (legacy format):\n${JSON.stringify(whiteboardState || { elements: [] })}\n`;
+
+    const systemPrompt = getSystemInstruction(difficulty) + currentScene;
 
     if (provider === 'gemini') {
       await streamGemini(systemPrompt, messages, res);
-    } else if (provider === 'openai' || provider === 'openai-compatible') {
+    } else if (provider === 'openai-compatible') {
+      await streamDeepSeek(systemPrompt, messages, res);
+    } else if (provider === 'openai') {
       await streamOpenAICompatible(systemPrompt, messages, res, openaiEndpoint);
     } else {
       // Default: Azure OpenAI
