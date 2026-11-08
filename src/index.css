@@ -28,6 +28,13 @@
   @apply bg-slate-300;
 }
 
+/* While dragging the split-view divider */
+body.is-resizing,
+body.is-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 /* Subtly animated dot typing indicator */
 .typing-dot {
   animation: typing 1.4s infinite ease-in-out both;
